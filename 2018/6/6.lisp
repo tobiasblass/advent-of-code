@@ -5,7 +5,11 @@
 (defun point-y (p) (elt p 1))
 
 (defun manhattan-distance (a b)
-  (apply #'+ (map 'list (compose #'abs #'-) a b)))
+  (declare (type (vector integer) a b))
+  (declare (optimize (speed 3)))
+  (iter (for an in-vector a)
+	(for bn in-vector b)
+	(sum (abs (- an bn)))))
 
 (deftest manhattan-distance
     (manhattan-distance #(0 0) #(3 5))
@@ -52,17 +56,17 @@
     `(progn
        (with ,r1 = ,(first ranges-list))
        (with ,r2 = ,(second ranges-list))
-       (initially (setq ,tuple (list (range-min ,r1) (- (range-min ,r2) 1))))
+       (initially (setq ,tuple (vector (range-min ,r1) (- (range-min ,r2) 1))))
        (for ,tuple 
 	    next (progn
-		   (cond ((and (= (first ,tuple) (range-max ,r1))
-			       (= (second ,tuple) (range-max ,r2)))
+		   (cond ((and (= (elt ,tuple 0) (range-max ,r1))
+			       (= (elt ,tuple 1) (range-max ,r2)))
 			  (terminate))
-			 ((= (second ,tuple) (range-max ,r2))
-			  (incf (first ,tuple))
-			  (setf (second ,tuple) (range-min ,r2)))
+			 ((= (elt ,tuple 1) (range-max ,r2))
+			  (incf (elt ,tuple 0))
+			  (setf (elt ,tuple 1) (range-min ,r2)))
 			 (t 
-			  (incf (second ,tuple))))
+			  (incf (elt ,tuple 1))))
 		   ,tuple))
        (for ,var = ,tuple))))
 
@@ -85,12 +89,12 @@
 				    (range y-min y-max))))))
 
 (defstruct (distance-map (:constructor make-distance-map-raw))
-  map ; maps a point #(x y) to a list of (coordinate distance) pairs
+  (map (make-array 0) :type (simple-array list)) ; maps a point #(x y) to a list of (coordinate distance) pairs
   xrange
   yrange)
 
 (defun distance-map-ranges (map)
-  (vector (distance-map-xrange map) (distance-map-yrange map)))
+  (values (distance-map-xrange map) (distance-map-yrange map)))
 
 (defun make-empty-distance-map (chronal-coordinates)
   "Given the chronal coordinates, returns a map mapping points to their closest chronal coordinate"
@@ -103,10 +107,14 @@
 					    :initial-element nil))))
 
 (defun distance-map-ref (map point)
-    (apply #'aref
-     (distance-map-map map)
-     (map 'list (lambda (coord range) (- coord (range-min range))) point (distance-map-ranges map))))
+  (declare (optimize (speed 3)))
+    (multiple-value-call #'aref
+	   (distance-map-map map)
+	   (multiple-value-bind (xrange yrange) (distance-map-ranges map)
+	     (values (- (point-x point) (range-min xrange))
+		     (- (point-y point) (range-min yrange))))))
 (defsetf distance-map-ref (map point) (val)
+  (declare (optimize (speed 3)))
   (with-gensyms (%point)
     `(let ((,%point ,point))
        (setf (aref (distance-map-map ,map)
@@ -118,6 +126,7 @@
 (defun map-distance-map! (f map)
   "Invokes f on every point of the distance map, updating the distance value with it's return value.
    f should take a point and the previous value of the map entry."
+  (declare (type (function ((vector integer) list) list) f))
   (iter (for point in-product-range ((distance-map-xrange map) (distance-map-yrange map)))
 	(slet (distance-map-ref map point)
 	  (setf it (funcall f point it)))))
@@ -128,7 +137,7 @@
 	(funcall f point (distance-map-ref map point))))
 
 (defun distance-map-add-chronal (map coordinate)
-  (assert (every #'in-range coordinate (distance-map-ranges map)))
+  (assert (every #'in-range coordinate (multiple-value-list (distance-map-ranges map))))
   (map-distance-map!
    (lambda (point prev)
      (cons (list coordinate (manhattan-distance point coordinate)) prev))
@@ -151,7 +160,7 @@
   (let (infinites)
     (map-distance-map
      (lambda (point distances)
-       (unless (every #'strictly-in-range point (distance-map-ranges distance-map))
+       (unless (every #'strictly-in-range point (multiple-value-list (distance-map-ranges distance-map)))
 	 ;; If the point is on the edge
 	 (awhen (unique-extremum distances #'< :key #'second)
 	   (push (first it) infinites))))
@@ -183,7 +192,3 @@
 		     #(8 9))))
       (solution1))
   17)
-
-(require :sb-sprof)
-(sb-sprof:with-profiling (:mode :alloc :report :flat :max-samples 10000)
-  (solution1))
