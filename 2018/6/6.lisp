@@ -1,23 +1,30 @@
 (in-package :aoc2018)
 
-(defun point (x y) (vector x y))
-(defun point-x (p) (elt p 0))
-(defun point-y (p) (elt p 1))
+(defun point (x y) (cons x y))
+(defun point-x (p) (car p))
+(defun point-y (p) (cdr p))
 
-(defun manhattan-distance (a b)
-  (declare (type (vector integer) a b))
-  (declare (optimize (speed 3)))
+(defgeneric manhattan-distance (a b))
+
+(defmethod manhattan-distance (a b)
   (iter (for an in-vector a)
 	(for bn in-vector b)
 	(sum (abs (- an bn)))))
 
+;;(defmethod manhattan-distance ((a cons) (b cons))
+(defun manhattan-distance (a b)
+;  (declare (optimize (speed 3) (safety 0) (debug 0)))
+  (declare (type (cons fixnum fixnum) a b))
+  (the fixnum (+ (the fixnum (abs (the fixnum (- (car a) (car b)))))
+		 (the fixnum (abs (the fixnum (- (cdr a) (cdr b))))))))
+
 (deftest manhattan-distance
-    (manhattan-distance #(0 0) #(3 5))
+    (manhattan-distance (point 0 0) (point 3 5))
   8)
 
 (defun read-input (fname)
   (mapcar (lambda (line)
-	    (apply #'vector
+	    (apply #'point
 		   (map 'list #'parse-integer
 			(nth-value 1
 				   (cl-ppcre:scan-to-strings "^\([0-9]*\), \([0-9]*\)$" line)))))
@@ -54,26 +61,26 @@
   (assert (= (length ranges-list) 2)) ; restriction for now
   (with-gensyms (r1 r2 tuple)
     `(progn
-       (with ,r1 = ,(first ranges-list))
-       (with ,r2 = ,(second ranges-list))
-       (initially (setq ,tuple (vector (range-min ,r1) (- (range-min ,r2) 1))))
+       (declare (type (or (cons integer integer) null) ,tuple))
+       (with ,r1 = (first ,ranges-list))
+       (with ,r2 = (second ,ranges-list))
+       (initially (setq ,tuple (cons (range-min ,r1) (- (range-min ,r2) 1))))
        (for ,tuple 
 	    next (progn
-		   (cond ((and (= (elt ,tuple 0) (range-max ,r1))
-			       (= (elt ,tuple 1) (range-max ,r2)))
+		   (cond ((and (= (car ,tuple) (range-max ,r1))
+			       (= (cdr ,tuple) (range-max ,r2)))
 			  (terminate))
-			 ((= (elt ,tuple 1) (range-max ,r2))
-			  (incf (elt ,tuple 0))
-			  (setf (elt ,tuple 1) (range-min ,r2)))
+			 ((= (cdr ,tuple) (range-max ,r2))
+			  (incf (car ,tuple))
+			  (setf (cdr ,tuple) (range-min ,r2)))
 			 (t 
-			  (incf (elt ,tuple 1))))
+			  (incf (cdr ,tuple))))
 		   ,tuple))
        (for ,var = ,tuple))))
 
 (deftest in-product-range-clause
-    (iter (for (a b) in-product-range ((range 1 10) (range 2 10)))
-	  (collect (list a b))
-	  (maximize (* (- 5 a) b) into foobar))
+    (iter (for (a . b) in-product-range ((range 1 10) (range 2 10)))
+	  (maximize (* (- 5 a) b)))
   40)
 
 (defun bounding-box (coords)
@@ -126,25 +133,27 @@
 (defun map-distance-map! (f map)
   "Invokes f on every point of the distance map, updating the distance value with it's return value.
    f should take a point and the previous value of the map entry."
-  (declare (type (function ((vector integer) list) list) f))
-  (iter (for point in-product-range ((distance-map-xrange map) (distance-map-yrange map)))
+  (declare (type (function (cons list) list) f))
+  (iter (for point in-product-range (multiple-value-list (distance-map-ranges map)))
 	(slet (distance-map-ref map point)
 	  (setf it (funcall f point it)))))
 
 (defun map-distance-map (f map)
+    (declare (type (function (cons list) t) f))
   "Like map-distance-map!, but does not update the map"
-  (iter (for point in-product-range ((distance-map-xrange map) (distance-map-yrange map)))
+  (iter (for point in-product-range (multiple-value-list (distance-map-ranges map)))
 	(funcall f point (distance-map-ref map point))))
 
 (defun distance-map-add-chronal (map coordinate)
-  (assert (every #'in-range coordinate (multiple-value-list (distance-map-ranges map))))
   (map-distance-map!
    (lambda (point prev)
      (cons (list coordinate (manhattan-distance point coordinate)) prev))
    map))
 
-(defun make-distance-map (chronal-coordinates)
-  (let ((map (make-empty-distance-map chronal-coordinates)))
+(defun make-distance-map (chronal-coordinates &optional virtual-chronals)
+  "Creates a distance map containing distances to all chronal coordinates.
+   virtual chronals may be added to force the bounding box to be larger; they are not treated as actual chronals" 
+  (let ((map (make-empty-distance-map (append chronal-coordinates virtual-chronals))))
     (mapc (curry #'distance-map-add-chronal map) chronal-coordinates)
     map))
 
@@ -160,7 +169,8 @@
   (let (infinites)
     (map-distance-map
      (lambda (point distances)
-       (unless (every #'strictly-in-range point (multiple-value-list (distance-map-ranges distance-map)))
+       (when (or (not (strictly-in-range (point-x point) (distance-map-xrange distance-map)))
+		 (not (strictly-in-range (point-y point) (distance-map-yrange distance-map))))
 	 ;; If the point is on the edge
 	 (awhen (unique-extremum distances #'< :key #'second)
 	   (push (first it) infinites))))
@@ -184,11 +194,30 @@
 		:key #'cdr)))))
        
 (deftest solution1-example
-    (let ((*input* '( #(1 1)
-		     #(1 6)
-		     #(8 3)
-		     #(3 4)
-		     #(5 5)
-		     #(8 9))))
+    (let ((*input* '( (1 . 1)
+		     (1 . 6)
+		     (8 . 3)
+		     (3 . 4)
+		     (5 . 5)
+		     (8 . 9))))
       (solution1))
   17)
+
+(defparameter *solution2-distance-limit* 10000)
+
+(defun range-extend (range amount &key (direction :both))
+  "Returns a new range, which is range extended by amount. Direction is either :lower, :higher or :both"
+  (range (- (range-min range) (if (member direction '(:lower :both))
+				  amount
+				  0))
+	 (+ (range-max range) (if (member direction '(:upper :both))
+				  amount
+				  0))))
+	    
+(defun solution2 ()
+  (iter (for point in-product-range (multiple-value-list (bounding-box *input*)))
+	(counting (< (reduce #'+ (mapcar (curry #'manhattan-distance point) *input*))
+		     10000))))
+
+(iter (for point in-product-range (multiple-value-list (bounding-box *input*)))
+      (collect (reduce #'+ (mapcar (curry #'manhattan-distance point) *input*))))
