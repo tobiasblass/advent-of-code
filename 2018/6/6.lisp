@@ -1,6 +1,11 @@
 (in-package :aoc2018)
-(defun manhattan-distance (point1 point2)
-  (apply #'+ (map 'list (compose #'abs #'-) point1 point2)))
+
+(defun point (x y) (vector x y))
+(defun point-x (p) (elt p 0))
+(defun point-y (p) (elt p 1))
+
+(defun manhattan-distance (a b)
+  (apply #'+ (map 'list (compose #'abs #'-) a b)))
 
 (deftest manhattan-distance
     (manhattan-distance #(0 0) #(3 5))
@@ -17,95 +22,157 @@
 
 (defparameter *input*  (read-input "6/input"))
 
+(defun range (a b)
+  "Constructs a range object representing the closed interval [a,b]"
+  (cons a b))
+
+(defun range-max (r) (cdr r))
+(defun range-min (r) (car r))
+(defun range-len (r) (+ 1 (- (range-max r) (range-min r))))
+
+(defun in-range (val range)
+  "Returns whether the given value is inside the number range"
+  (<= (car range) val (cdr range)))
+(defun strictly-in-range (val range)
+  "Returns whether the given value is inside the number range, but not on the edge"
+  (< (car range) val (cdr range)))
+  
+(defun range->list (range)
+  (iter (for i from (car range) to (cdr range))
+	(collect i)))
+
+(defmacro-clause (FOR var IN-RANGE range)
+  (with-gensyms (r)
+    `(progn
+       (with ,r = ,range)
+       (for ,var from (range-min ,r) to (range-max ,r)))))
+(defmacro-clause (FOR var IN-PRODUCT-RANGE ranges-list)
+  (assert (= (length ranges-list) 2)) ; restriction for now
+  (with-gensyms (r1 r2 tuple)
+    `(progn
+       (with ,r1 = ,(first ranges-list))
+       (with ,r2 = ,(second ranges-list))
+       (initially (setq ,tuple (list (range-min ,r1) (- (range-min ,r2) 1))))
+       (for ,tuple 
+	    next (progn
+		   (cond ((and (= (first ,tuple) (range-max ,r1))
+			       (= (second ,tuple) (range-max ,r2)))
+			  (terminate))
+			 ((= (second ,tuple) (range-max ,r2))
+			  (incf (first ,tuple))
+			  (setf (second ,tuple) (range-min ,r2)))
+			 (t 
+			  (incf (second ,tuple))))
+		   ,tuple))
+       (for ,var = ,tuple))))
+
+(deftest in-product-range-clause
+    (iter (for (a b) in-product-range ((range 1 10) (range 2 10)))
+	  (collect (list a b))
+	  (maximize (* (- 5 a) b) into foobar))
+  40)
 
 (defun bounding-box (coords)
   "Returns the bounding box of coords as a pair of bounds ((xmin xmax) (ymin ymax))"
   (iterate (for point in coords)
-	   (for x = (elt point 0))
-	   (for y = (elt point 1))
+	   (for x = (point-x point))
+	   (for y = (point-y point))
            (minimizing x into x-min)
            (minimizing y into y-min)
            (maximizing x into x-max)
            (maximizing y into y-max)
-           (finally (return `((,x-min ,x-max)
-			      (,y-min ,y-max))))))
+           (finally (return (values (range x-min x-max)
+				    (range y-min y-max))))))
 
 (defstruct (distance-map (:constructor make-distance-map-raw))
-  closest-neighbour-map ; maps a point #(x y) to the list (coordinate distance) pointing to the nearest neighbour
-  xbounds
-  ybounds)
+  map ; maps a point #(x y) to a list of (coordinate distance) pairs
+  xrange
+  yrange)
 
-(defun map-distance-map! (f map)
-  "Invokes f on every point of the distance map, updating the distance value with it's return value.
-   f should take a point and the previous value of the map entry."
-  (with-slots (xbounds ybounds closest-neighbour-map) map
-    (iter (for x from (first xbounds) to (second xbounds))
-	  (iter (for y from (first ybounds) to (second ybounds))
-		(for point = (vector x y))
-		(slet (gethash point closest-neighbour-map)
-		  (setf it (funcall f point it)))))))
-
-(defun map-distance-map (f map)
-  "Like map-distance-map!, but does not update the map"
-  (map-distance-map! (lambda (point prev) (funcall f point prev) prev) map))
-
-(defun distance-map-add-chronal (map coordinate)
-  (with-slots (xbounds ybounds closest-neighbour-map) map
-    (assert (<= (first xbounds) (elt coordinate 0) (second xbounds)))
-    (assert (<= (first ybounds) (elt coordinate 1) (second ybounds)))
-    (map-distance-map!
-     (lambda (point prev)
-       (let ((distance (manhattan-distance point coordinate)))
-	 (cond
-	   ((or (not prev) (> (second prev) distance))
-	    (list coordinate distance))
-	   ((= (second prev) distance)
-	    (list nil distance))
-	   ((< (second prev) distance)
-	    prev))))
-     map)))
-	     
+(defun distance-map-ranges (map)
+  (vector (distance-map-xrange map) (distance-map-yrange map)))
 
 (defun make-empty-distance-map (chronal-coordinates)
   "Given the chronal coordinates, returns a map mapping points to their closest chronal coordinate"
   ;; Cut out a bounding rectangle that contains all points. Optimal would be a bounding circle, but that is harder to compute.
-  (let ((bounds (bounding-box chronal-coordinates)))
-    (make-distance-map-raw :xbounds (first bounds)
-			   :ybounds (second bounds)
-			   :closest-neighbour-map (make-hash-table :test #'equalp))))
+  (multiple-value-bind (xbounds ybounds) (bounding-box chronal-coordinates)
+    (make-distance-map-raw :xrange xbounds
+			   :yrange ybounds
+			   :map (make-array `(,(range-len xbounds) ,(range-len ybounds))
+					    :element-type 'list
+					    :initial-element nil))))
+
+(defun distance-map-ref (map point)
+    (apply #'aref
+     (distance-map-map map)
+     (map 'list (lambda (coord range) (- coord (range-min range))) point (distance-map-ranges map))))
+(defsetf distance-map-ref (map point) (val)
+  (with-gensyms (%point)
+    `(let ((,%point ,point))
+       (setf (aref (distance-map-map ,map)
+		   (- (point-x ,%point) (range-min (distance-map-xrange ,map)))
+		   (- (point-y ,%point) (range-min (distance-map-yrange ,map))))
+	     ,val))))
+
+
+(defun map-distance-map! (f map)
+  "Invokes f on every point of the distance map, updating the distance value with it's return value.
+   f should take a point and the previous value of the map entry."
+  (iter (for point in-product-range ((distance-map-xrange map) (distance-map-yrange map)))
+	(slet (distance-map-ref map point)
+	  (setf it (funcall f point it)))))
+
+(defun map-distance-map (f map)
+  "Like map-distance-map!, but does not update the map"
+  (iter (for point in-product-range ((distance-map-xrange map) (distance-map-yrange map)))
+	(funcall f point (distance-map-ref map point))))
+
+(defun distance-map-add-chronal (map coordinate)
+  (assert (every #'in-range coordinate (distance-map-ranges map)))
+  (map-distance-map!
+   (lambda (point prev)
+     (cons (list coordinate (manhattan-distance point coordinate)) prev))
+   map))
 
 (defun make-distance-map (chronal-coordinates)
   (let ((map (make-empty-distance-map chronal-coordinates)))
     (mapc (curry #'distance-map-add-chronal map) chronal-coordinates)
     map))
 
+(defun unique-extremum (sequence predicate &key (key #'identity) (start 0) end)
+  "Returns the element that would be first in the result if sequence was sorted with the given parameters, but only, if it is unique (with equality defined as (and (not (funcall predicate x y)) (not (funcall predicate y x))))"
+  (let ((sorted (sort (subseq sequence start end) predicate :key key)))
+    (when (funcall predicate
+		       (funcall key (elt sorted 0))
+		       (funcall key (elt sorted 1)))
+      (elt sorted 0))))
+		       
 (defun infinite-area-chronals (distance-map)
-  (with-slots (xbounds ybounds) distance-map
-    (let (infinites)
-      (map-distance-map
-       (lambda (point entry)
-	 (when (or (member (elt point 0) xbounds)
-		   (member (elt point 1) ybounds))
-	   ;; If the point is on the edge
-	   (push (first entry) infinites)))
-       distance-map)
-      (remove-duplicates infinites :test #'equalp))))
+  (let (infinites)
+    (map-distance-map
+     (lambda (point distances)
+       (unless (every #'strictly-in-range point (distance-map-ranges distance-map))
+	 ;; If the point is on the edge
+	 (awhen (unique-extremum distances #'< :key #'second)
+	   (push (first it) infinites))))
+     distance-map)
+    (remove-duplicates infinites :test #'equalp)))
 
 (defun solution1 ()
   (let ((distance-map (make-distance-map *input*))
 	(area-sizes (make-hash-table :test #'equalp)))
     (map-distance-map
-     (lambda (point value)
-       (let ((chronal (first value)))
-	 (when chronal
-	   (incf (gethash chronal area-sizes 0)))))
+     (lambda (point distances)
+       (declare (ignore point))
+       (awhen (unique-extremum distances #'< :key #'second)
+	 (incf (gethash (first it) area-sizes 0))))
      distance-map)
     (let ((infinites (infinite-area-chronals distance-map)))
-      (reduce #'max
-       (mapcar #'cdr
-	       (remove-if (rcurry #'member infinites) 
-			  (hash-table-alist area-sizes)
-			  :key #'car))))))
+      (cdr (extremum (remove-if (rcurry #'member infinites) 
+			   (hash-table-alist area-sizes)
+			   :key #'car)
+		#'>
+		:key #'cdr)))))
        
 (deftest solution1-example
     (let ((*input* '( #(1 1)
@@ -116,8 +183,7 @@
 		     #(8 9))))
       (solution1))
   17)
-      
 
-      
-
-	  
+(require :sb-sprof)
+(sb-sprof:with-profiling (:mode :alloc :report :flat :max-samples 10000)
+  (solution1))
