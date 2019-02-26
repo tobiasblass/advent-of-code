@@ -29,8 +29,6 @@
       '(2 3 0 3 10 11 12 1 1 0 1 99 2 1 1 2)))
   138)
 
-(sb-rt:do-tests)
-
 ;; Solution 1
 (sum-metadata (parse *input*))
 
@@ -52,6 +50,9 @@
      (parse
       '(2 3 0 3 10 11 12 1 1 0 1 99 2 1 1 2)))
   66)
+
+(sb-rt:do-tests)
+
 
 (tree-value (parse *input*))	  
 			   
