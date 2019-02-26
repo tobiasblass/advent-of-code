@@ -81,3 +81,8 @@
 
 ; Solution 1
 (nth-value 0 (game 430 71588))
+
+; Solution 1
+(nth-value 0 (game 430 (* 100 71588)))
+
+
