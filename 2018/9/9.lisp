@@ -84,5 +84,3 @@
 
 ; Solution 1
 (nth-value 0 (game 430 (* 100 71588)))
-
-

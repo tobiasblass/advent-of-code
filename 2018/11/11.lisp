@@ -156,5 +156,5 @@
 (assert (equal (let ((*grid-serial* 18)) (most-powerful-square/anysize))
 	       (list 90 269 16)))
 
-
+; Solution 2
 (most-powerful-square/anysize)
